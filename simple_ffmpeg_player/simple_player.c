@@ -132,8 +132,8 @@ int main(int argc, char* argv[]) {
 	//     如果解码后得到图像的不被SDL支持，不进行图像转换的话，SDL是无法正常显示图像的
 	//     如果解码后得到图像的能被SDL支持，则不必进行图像转换
 	//     这里为了编码简便，统一转换为SDL支持的格式AV_PIX_FMT_YUV420P==>SDL_PIXELFORMAT_IYUV
-	sws_ctx = sws_getContext(p_codec_ctx->width, p_codec_ctx->height, AV_PIX_FMT_YUV420P,	//源格式
-							 p_codec_ctx->width, p_codec_ctx->height, SDL_PIXELFORMAT_IYUV, //目标格式
+	sws_ctx = sws_getContext(p_codec_ctx->width, p_codec_ctx->height, p_codec_ctx->pix_fmt,	//源格式
+							 p_codec_ctx->width, p_codec_ctx->height, AV_PIX_FMT_YUV420P, //目标格式
 							 SWS_BILINEAR,	//使用双线性缩放算法。
 							 NULL,// src filter
 							 NULL,// dst filter
@@ -196,22 +196,33 @@ int main(int argc, char* argv[]) {
 	//     对于音频来说，若是帧长固定的格式则一个packet可包含整数个frame，
 	//                   若是帧长可变的格式则一个packet只包含一个frame
 	p_packet = (AVPacket*)av_malloc(sizeof(AVPacket));
-	while (av_read_frame(p_fmt_ctx, p_packet)) {
+	while (av_read_frame(p_fmt_ctx, p_packet) == 0) //av_read_frame 返回 0 表示成功读取到一个 packet（帧）
+	{
 		// 仅处理视频帧
-		if (p_packet->stream_index == AVMEDIA_TYPE_VIDEO) {
+		if (p_packet->stream_index == v_idx) {
 			// A9. 视频解码：packet ==> frame
 			// A9.1 向解码器喂数据，一个packet可能是一个视频帧或多个音频帧，此处音频帧已被上一句滤掉
 			ret = avcodec_send_packet(p_codec_ctx, p_packet);
 			if (ret != 0) {
-				printf("avcodec_send_packet() failed: %s\n", ret);
+				printf("avcodec_send_packet() failed: %d\n", ret);
 				return -1;
 			}
 			// A9.2 接收解码器输出的数据，此处只处理视频帧，每次接收一个packet，将之解码得到一个frame
 			ret = avcodec_receive_frame(p_codec_ctx, p_frm_raw);
-			if (ret != 0) {
-				printf("avcodec_receive_frame() failed: %s\n", ret);
+			if (ret == AVERROR(EAGAIN)) {
+				// 解码器还没有足够的数据，继续发送数据
+				continue;
+			}
+			else if (ret < 0) {
+				printf("avcodec_receive_frame() failed: %d\n", ret);
 				return -1;
 			}
+			// 成功解码了一帧
+			break;
+			/*if (ret != 0) {
+				printf("avcodec_receive_frame() failed: %d\n", ret);
+				return -1;
+			}*/
 			 // A10. 图像转换：p_frm_raw->data ==> p_frm_yuv->data
 			 // 将源图像中一片连续的区域经过处理后更新到目标图像对应区域，处理的图像区域必须逐行连续
 			 // plane: 如YUV有Y、U、V三个plane，RGB有R、G、B三个plane
@@ -254,10 +265,11 @@ int main(int argc, char* argv[]) {
 	SDL_Quit();
 	sws_freeContext(sws_ctx);
 	av_free(buffer);
-	av_frame_free(p_frm_yuv);
-	av_frame_free(p_frm_raw);
-	avcodec_close(p_codec_ctx);
-	avformat_close_input(p_codec_ctx);
+	av_frame_free(&p_frm_yuv);
+	av_frame_free(&p_frm_raw);
+	//avcodec_close(p_codec_ctx);//avcodec_close已废弃，使用avcodec_free_context替代
+	avcodec_free_context(&p_codec_ctx);
+	avformat_close_input(&p_fmt_ctx);
 	
 	return 0;
 	
